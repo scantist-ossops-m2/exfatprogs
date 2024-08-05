@@ -647,7 +647,6 @@ static int handle_duplicated_filename(struct exfat_de_iter *iter,
 {
 	int ret;
 	struct exfat_lookup_filter filter;
-	char filename[PATH_MAX + 1] = {0};
 
 	ret = exfat_lookup_file_by_utf16name(iter->exfat, iter->parent,
 			inode->name, &filter);
@@ -660,14 +659,7 @@ static int handle_duplicated_filename(struct exfat_de_iter *iter,
 	if (exfat_de_iter_device_offset(iter) == filter.out.dev_offset)
 		return 0;
 
-	ret = exfat_utf16_dec(inode->name, NAME_BUFFER_SIZE, filename,
-			PATH_MAX);
-	if (ret < 0) {
-		exfat_err("failed to decode filename\n");
-		return ret;
-	}
-
-	return exfat_repair_rename_ask(&exfat_fsck, iter, filename,
+	return exfat_repair_rename_ask(&exfat_fsck, iter, inode->name,
 			ER_DE_DUPLICATED_NAME, "filename is duplicated");
 }
 
@@ -682,7 +674,7 @@ static int check_name_dentry_set(struct exfat_de_iter *iter,
 	exfat_de_iter_get(iter, 1, &stream_de);
 
 	name_len = exfat_utf16_len(inode->name, NAME_BUFFER_SIZE);
-	if (stream_de->stream_name_len != name_len) {
+	if (name_len && stream_de->stream_name_len != name_len) {
 		if (repair_file_ask(iter, NULL, ER_DE_NAME_LEN,
 				    "the name length of a file is wrong")) {
 			exfat_de_iter_get_dirty(iter, 1, &stream_de);
@@ -691,6 +683,18 @@ static int check_name_dentry_set(struct exfat_de_iter *iter,
 		} else {
 			return -EINVAL;
 		}
+	}
+
+	ret = exfat_check_name(inode->name, stream_de->stream_name_len);
+	if (ret != stream_de->stream_name_len) {
+		char err_msg[36];
+
+		snprintf(err_msg, sizeof(err_msg),
+			"filename has invalid character '%c'",
+			le16_to_cpu(inode->name[ret]));
+
+		return exfat_repair_rename_ask(&exfat_fsck, iter, inode->name,
+			ER_DE_INVALID_NAME, err_msg);
 	}
 
 	hash = exfat_calc_name_hash(iter->exfat, inode->name, (int)name_len);
@@ -713,21 +717,18 @@ static int check_name_dentry_set(struct exfat_de_iter *iter,
 	return ret;
 }
 
-const __le16 MSDOS_DOT[ENTRY_NAME_MAX] = {cpu_to_le16(46), 0, };
-const __le16 MSDOS_DOTDOT[ENTRY_NAME_MAX] = {cpu_to_le16(46), cpu_to_le16(46), 0, };
-
 static int handle_dot_dotdot_filename(struct exfat_de_iter *iter,
-				      struct exfat_dentry *dentry,
+				      __le16 *filename,
 				      int strm_name_len)
 {
-	char *filename;
+	int i;
 
-	if (!memcmp(dentry->name_unicode, MSDOS_DOT, strm_name_len * 2))
-		filename = ".";
-	else if (!memcmp(dentry->name_unicode, MSDOS_DOTDOT,
-			 strm_name_len * 2))
-		filename = "..";
-	else
+	for (i = 0; i < strm_name_len; i++) {
+		if (filename[i] != UTF16_DOT)
+			return 0;
+	}
+
+	if (filename[i])
 		return 0;
 
 	return exfat_repair_rename_ask(&exfat_fsck, iter, filename,
@@ -817,7 +818,7 @@ static int read_file_dentry_set(struct exfat_de_iter *iter,
 	}
 
 	if (file_de->file_num_ext == 2 && stream_de->stream_name_len <= 2) {
-		ret = handle_dot_dotdot_filename(iter, dentry,
+		ret = handle_dot_dotdot_filename(iter, node->name,
 				stream_de->stream_name_len);
 		if (ret < 0) {
 			*skip_dentries = file_de->file_num_ext + 1;
@@ -1005,7 +1006,7 @@ static int read_bitmap(struct exfat *exfat)
 	exfat->disk_bitmap_size = DIV_ROUND_UP(exfat->clus_count, 8);
 
 	exfat_bitmap_set_range(exfat, exfat->alloc_bitmap,
-			       le64_to_cpu(dentry->bitmap_start_clu),
+			       le32_to_cpu(dentry->bitmap_start_clu),
 			       DIV_ROUND_UP(exfat->disk_bitmap_size,
 					    exfat->clus_size));
 	free(filter.out.dentry_set);
@@ -1034,9 +1035,8 @@ static int decompress_upcase_table(const __le16 *in_table, size_t in_len,
 		ch = le16_to_cpu(in_table[i]);
 
 		if (ch == 0xFFFF && i + 1 < in_len) {
-			uint16_t len = le16_to_cpu(in_table[++i]);
-
-			k += len;
+			++i;
+			k += le16_to_cpu(in_table[i]);
 		} else {
 			out_table[k++] = ch;
 		}
@@ -1616,7 +1616,7 @@ int main(int argc, char * const argv[])
 
 	exfat_fsck.options = ui.options;
 
-	snprintf(ui.ei.dev_name, sizeof(ui.ei.dev_name), "%s", argv[optind]);
+	ui.ei.dev_name = argv[optind];
 	ret = exfat_get_blk_dev_info(&ui.ei, &bd);
 	if (ret < 0) {
 		exfat_err("failed to open %s. %d\n", ui.ei.dev_name, ret);

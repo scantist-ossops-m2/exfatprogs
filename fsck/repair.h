@@ -19,6 +19,7 @@
 #define ER_DE_NAME_LEN			0x00001032
 #define ER_DE_DOT_NAME			0x00001033
 #define ER_DE_DUPLICATED_NAME		0x00001034
+#define ER_DE_INVALID_NAME		0x00001035
 #define ER_FILE_VALID_SIZE		0x00002001
 #define ER_FILE_INVALID_CLUS		0x00002002
 #define ER_FILE_FIRST_CLUS		0x00002003
@@ -35,5 +36,5 @@ int exfat_repair_ask(struct exfat_fsck *fsck, er_problem_code_t prcode,
 		     const char *fmt, ...);
 
 int exfat_repair_rename_ask(struct exfat_fsck *fsck, struct exfat_de_iter *iter,
-		char *old_name, er_problem_code_t prcode, char *error_msg);
+		__le16 *uname, er_problem_code_t prcode, char *error_msg);
 #endif

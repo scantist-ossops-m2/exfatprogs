@@ -496,12 +496,20 @@ int exfat_set_volume_label(struct exfat *exfat, char *label_input)
 			volume_label, sizeof(volume_label));
 	if (volume_label_len < 0) {
 		exfat_err("failed to encode volume label\n");
-		free(pvol);
-		return -1;
+		err = -1;
+		goto out;
+	}
+
+	pvol->vol_char_cnt = volume_label_len/2;
+	err = exfat_check_name(volume_label, pvol->vol_char_cnt);
+	if (err != pvol->vol_char_cnt) {
+		exfat_err("volume label contain invalid character(%c)\n",
+				le16_to_cpu(label_input[err]));
+		err = -1;
+		goto out;
 	}
 
 	memcpy(pvol->vol_label, volume_label, volume_label_len);
-	pvol->vol_char_cnt = volume_label_len/2;
 
 	loc.parent = exfat->root;
 	loc.file_offset = filter.out.file_offset;
@@ -509,6 +517,7 @@ int exfat_set_volume_label(struct exfat *exfat, char *label_input)
 	err = exfat_add_dentry_set(exfat, &loc, pvol, dcount, false);
 	exfat_info("new label: %s\n", label_input);
 
+out:
 	free(pvol);
 
 	return err;
@@ -759,7 +768,7 @@ int exfat_show_volume_serial(int fd)
 		goto free_ppbr;
 	}
 
-	exfat_info("volume serial : 0x%x\n", ppbr->bsx.vol_serial);
+	exfat_info("volume serial : 0x%x\n", le32_to_cpu(ppbr->bsx.vol_serial));
 
 free_ppbr:
 	free(ppbr);
@@ -919,6 +928,8 @@ int exfat_set_fat(struct exfat *exfat, clus_t clus, clus_t next_clus)
 		exfat->bs->bsx.sect_size_bits;
 	offset += sizeof(clus_t) * clus;
 
+	next_clus = cpu_to_le32(next_clus);
+
 	if (exfat_write(exfat->blk_dev->dev_fd, &next_clus, sizeof(next_clus),
 			offset) != sizeof(next_clus))
 		return -EIO;
@@ -1057,4 +1068,23 @@ int exfat_parse_ulong(const char *s, unsigned long *out)
 		return -EINVAL;
 
 	return 0;
+}
+
+static inline int check_bad_utf16_char(unsigned short w)
+{
+	return (w < 0x0020) || (w == '*') || (w == '?') || (w == '<') ||
+		(w == '>') || (w == '|') || (w == '"') || (w == ':') ||
+		(w == '/') || (w == '\\');
+}
+
+int exfat_check_name(__le16 *utf16_name, int len)
+{
+	int i;
+
+	for (i = 0; i < len; i++) {
+		if (check_bad_utf16_char(le16_to_cpu(utf16_name[i])))
+			break;
+	}
+
+	return i;
 }
